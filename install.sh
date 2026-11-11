@@ -27,6 +27,11 @@ PORT="${SB_PORT:-3234}"
 ADMIN="${SB_ADMIN:-}"          # optional user:pass -> runs `silverbullet setup` on a fresh data dir
 DO_START=1
 FORCE=0
+# The service worker is off by default: it cannot be registered behind
+# Cloudflare Access (the script URL answers 302) and behind any other
+# authenticating proxy. Enable it with --with-service-worker.
+WITH_SW="${SB_WITH_SERVICE_WORKER:-0}"
+case "$WITH_SW" in 1|true|yes) WITH_SW=1 ;; *) WITH_SW=0 ;; esac
 
 C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
 [ -t 1 ] || { C_RED=; C_GRN=; C_YEL=; C_DIM=; C_OFF=; }
@@ -52,9 +57,16 @@ Options:
   --bin-dir <dir>    Install folder (default: ~/.local/bin)
   --admin <u:p>      On a fresh data folder, provision it non-interactively with
                      this admin login (see: silverbullet setup --help)
+  --with-service-worker
+                     Enable the client service worker (offline cache, PWA
+                     install, client-side encryption). OFF by default: it
+                     cannot register behind Cloudflare Access or any other
+                     redirecting auth proxy ("The script resource is behind a
+                     redirect, which is disallowed").
   -h, --help         This help
 
-Environment: SB_VERSION, SB_PORT, SB_HOSTNAME, SB_DATA_DIR, SB_BIN_DIR, SB_ADMIN
+Environment: SB_VERSION, SB_PORT, SB_HOSTNAME, SB_DATA_DIR, SB_BIN_DIR, SB_ADMIN,
+             SB_WITH_SERVICE_WORKER=1 (same as --with-service-worker)
 EOF
 }
 
@@ -68,6 +80,8 @@ while [ $# -gt 0 ]; do
     --data)      DATA_DIR="${2:?}"; shift 2 ;;
     --bin-dir)   BIN_DIR="${2:?}"; BIN="$BIN_DIR/silverbullet"; shift 2 ;;
     --admin)     ADMIN="${2:?}"; shift 2 ;;
+    --with-service-worker|--service-worker) WITH_SW=1; shift ;;
+    --no-service-worker) WITH_SW=0; shift ;;
     -h|--help)   usage; exit 0 ;;
     *)           die "unknown option: $1 (try --help)" ;;
   esac
@@ -162,7 +176,7 @@ Restart=on-failure
 RestartSec=2
 TimeoutStopSec=20
 SyslogIdentifier=silverbullet
-
+$(if [ "$WITH_SW" = 0 ]; then printf 'Environment=SB_DISABLE_SERVICE_WORKER=1\n'; fi)
 # Moderate hardening: SilverBullet only ever needs its data folder.
 # NOTE: do NOT add ProtectKernelModules=/ProtectKernelLogs=/ProtectClock= here.
 # They clear bits from the capability bounding set, and the *user* manager
@@ -296,6 +310,7 @@ cat <<EOF
 
 ${C_DIM}--------------------------------------------------------------${C_OFF}
  URL       : http://$HOSTNAME_ARG:$PORT/   (fresh data dir: open /.setup)
+ sw        : $(if [ "$WITH_SW" = 1 ]; then echo "enabled"; else echo "disabled (needs --with-service-worker)"; fi)
  binary    : $BIN
  data      : $DATA_DIR
  unit      : $UNIT   (edit, then: systemctl --user daemon-reload)
