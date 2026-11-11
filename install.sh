@@ -43,6 +43,11 @@ case "$WITH_SW" in 0|false|no) WITH_SW=0 ;; *) WITH_SW=1 ;; esac
 # Optional URL prefix when the space is mounted below the domain root.
 URL_PREFIX="${SB_URL_PREFIX:-}"
 
+# Process-wide shell kill switch. Upstream defaults to "local" (any command may
+# be run from Space Lua); with no built-in login that is remote code execution
+# for anyone who gets past the proxy, so it is off unless asked for.
+SHELL_BACKEND="${SB_SHELL_BACKEND:-off}"
+
 C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
 [ -t 1 ] || { C_RED=; C_GRN=; C_YEL=; C_DIM=; C_OFF=; }
 
@@ -72,6 +77,8 @@ Options:
   --admin <u:p>      Only with --multi-space: provision the admin account
   --url-prefix <p>   Mount the space below the domain root, e.g. /notes
                      (default: root)
+  --enable-shell     Allow Space Lua to run local shell commands
+                     (SB_SHELL_BACKEND=local). Off by default.
   --no-service-worker
                      Disable the client service worker (offline/PWA/encryption).
                      Only useful when an auth proxy cannot be told to let
@@ -98,6 +105,8 @@ while [ $# -gt 0 ]; do
     --single)    SPACE_MODE=single; shift ;;
     --multi-space|--multi) SPACE_MODE=multi; shift ;;
     --url-prefix) URL_PREFIX="${2:?}"; shift 2 ;;
+    --enable-shell) SHELL_BACKEND=local; shift ;;
+    --disable-shell) SHELL_BACKEND=off; shift ;;
     --with-service-worker|--service-worker) WITH_SW=1; shift ;;
     --no-service-worker) WITH_SW=0; shift ;;
     -h|--help)   usage; exit 0 ;;
@@ -203,6 +212,7 @@ TimeoutStopSec=20
 SyslogIdentifier=silverbullet
 $(if [ "$WITH_SW" = 0 ]; then printf 'Environment=SB_DISABLE_SERVICE_WORKER=1\n'; fi)
 $(if [ -n "$URL_PREFIX" ]; then printf 'Environment=SB_URL_PREFIX=%s\n' "$URL_PREFIX"; fi)
+Environment=SB_SHELL_BACKEND=$SHELL_BACKEND
 # Moderate hardening: SilverBullet only ever needs its data folder.
 # NOTE: do NOT add ProtectKernelModules=/ProtectKernelLogs=/ProtectClock= here.
 # They clear bits from the capability bounding set, and the *user* manager
@@ -340,6 +350,7 @@ ${C_DIM}--------------------------------------------------------------${C_OFF}
  URL       : http://$HOSTNAME_ARG:$PORT$URL_PREFIX/   ($(if [ "$SPACE_MODE" = "single" ]; then echo "no built-in login; put your auth proxy in front"; else echo "fresh data dir: open /.setup"; fi))
  auth      : $(if [ "$SPACE_MODE" = "single" ]; then echo "single-space, no built-in login (expects a proxy/tunnel in front)"; else echo "multi-space, SilverBullet accounts (spaces.json)"; fi)
  sw        : $(if [ "$WITH_SW" = 1 ]; then echo "enabled"; else echo "disabled (--no-service-worker)"; fi)
+ shell     : $SHELL_BACKEND
  binary    : $BIN
  data      : $DATA_DIR
  unit      : $UNIT   (edit, then: systemctl --user daemon-reload)

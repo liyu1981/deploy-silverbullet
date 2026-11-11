@@ -66,6 +66,7 @@ Pin or roll back to a specific release:
                    (spaces.json + users.json, set up through /.setup)
 --admin <u:p>      Only with --multi-space: provision the admin account
 --url-prefix <p>   Mount the space below the domain root (e.g. /notes)
+--enable-shell     Allow Space Lua to run local shell commands (off by default)
 --no-service-worker
                    Disable the client service worker (see below)
 --with-service-worker
@@ -74,7 +75,7 @@ Pin or roll back to a specific release:
 
 Environment equivalents: `SB_VERSION`, `SB_HOSTNAME`, `SB_PORT`,
 `SB_DATA_DIR`, `SB_BIN_DIR`, `SB_ADMIN`, `SB_SPACE_MODE=single|multi`,
-`SB_URL_PREFIX`, `SB_WITH_SERVICE_WORKER=0|1`.
+`SB_URL_PREFIX`, `SB_WITH_SERVICE_WORKER=0|1`, `SB_SHELL_BACKEND=local|off`.
 
 ## Single-space mode / external login
 
@@ -86,7 +87,12 @@ By default the unit runs `silverbullet --single`, which means:
   proxy, Authelia, a VPN, …;
 * **client-side encryption is unavailable** (it needs SilverBullet's own
   username/password to derive the key). That is fine when an external proxy
-  does authentication.
+  does authentication;
+* shell execution from Space Lua is **off** (`SB_SHELL_BACKEND=off`). Upstream
+  defaults to `local`, i.e. any command can be run from a `space-lua` block
+  with an empty whitelist; with no built-in login that would be remote code
+  execution for anyone who gets past the proxy. Pass `--enable-shell` if you
+  rely on it, ideally together with a proxy-side access rule.
 
 Because of that, a data folder left over from a multi-space setup
 (`spaces.json`) makes the service refuse to start; the installer stops early
