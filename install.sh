@@ -164,11 +164,14 @@ TimeoutStopSec=20
 SyslogIdentifier=silverbullet
 
 # Moderate hardening: SilverBullet only ever needs its data folder.
+# NOTE: do NOT add ProtectKernelModules=/ProtectKernelLogs=/ProtectClock= here.
+# They clear bits from the capability bounding set, and the *user* manager
+# cannot drop capabilities (no CAP_SETPCAP), so the unit dies at exec with
+# "Failed to drop capabilities: Operation not permitted" (218/CAPABILITIES).
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 
@@ -262,6 +265,8 @@ if [ "$UNIT_CHANGED" = 1 ]; then
 fi
 
 systemctl --user enable "$SERVICE" >/dev/null 2>&1 || warn "could not enable $SERVICE"
+# Clear any start-limit/failed state left over from an earlier broken start.
+systemctl --user reset-failed "$SERVICE" >/dev/null 2>&1 || true
 systemctl --user restart "$SERVICE" || die "failed to start $SERVICE (see: journalctl --user -u $SERVICE -n 50)"
 
 # Keep the service running after logout / without an active login session.
