@@ -149,3 +149,16 @@ systemctl --user daemon-reload
 # data is kept; remove it explicitly if you want it gone:
 # rm -rf ~/.silverbullet
 ```
+
+## Migrating from Logseq
+
+`logseq2sb/` contains a standalone converter for Logseq Markdown graphs
+(pages, journals, assets, task markers, block references, macros, …):
+
+```bash
+logseq2sb/logseq2sb.py ~/logseq-graph /path/to/space-folder --dry-run
+logseq2sb/logseq2sb.py ~/logseq-graph /path/to/space-folder
+```
+
+See [logseq2sb/README.md](logseq2sb/README.md) for the full mapping and the
+list of things that need manual attention after the import.
