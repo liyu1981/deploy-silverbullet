@@ -10,9 +10,11 @@ Installs or upgrades [SilverBullet](https://silverbullet.md) on a Linux box
 | Listens on  | `http://127.0.0.1:3234`                          |
 | Unit file   | `~/.config/systemd/user/silverbullet.service`    |
 
-The client service worker is **disabled by default** (see
-[Service worker](#service-worker--cloudflare-access)); pass
-`--with-service-worker` to enable it.
+Defaults: **single-space mode with no built-in login**, meant to sit behind an
+authenticating proxy or tunnel (Cloudflare Access, oauth2-proxy, Authelia, …),
+and the client **service worker enabled**. See
+[Single-space mode / external login](#single-space-mode--external-login) and
+[Service worker](#service-worker--auth-proxies).
 
 The release asset used is `silverbullet-server-linux-<arch>.zip` (the server
 build with the web UI embedded) from the latest GitHub release.
@@ -59,57 +61,83 @@ Pin or roll back to a specific release:
 --port <port>      Listen port      (default 3234)
 --data <dir>       Data folder      (default ~/.silverbullet)
 --bin-dir <dir>    Install folder   (default ~/.local/bin)
---admin <u:p>      Provision a fresh data folder non-interactively
-                   (runs `silverbullet setup --admin u:p <dir>`)
---with-service-worker
-                   Enable the client service worker (also: --service-worker)
+--single           Single-space mode, no built-in login (default)
+--multi-space      Multi-space mode with SilverBullet's own accounts
+                   (spaces.json + users.json, set up through /.setup)
+--admin <u:p>      Only with --multi-space: provision the admin account
+--url-prefix <p>   Mount the space below the domain root (e.g. /notes)
 --no-service-worker
-                   Turn the service worker back off (the default)
+                   Disable the client service worker (see below)
+--with-service-worker
+                   Enable the service worker (default; alias --service-worker)
 ```
 
 Environment equivalents: `SB_VERSION`, `SB_HOSTNAME`, `SB_PORT`,
-`SB_DATA_DIR`, `SB_BIN_DIR`, `SB_ADMIN`, `SB_WITH_SERVICE_WORKER=1`.
+`SB_DATA_DIR`, `SB_BIN_DIR`, `SB_ADMIN`, `SB_SPACE_MODE=single|multi`,
+`SB_URL_PREFIX`, `SB_WITH_SERVICE_WORKER=0|1`.
 
-## Service worker / Cloudflare Access
+## Single-space mode / external login
 
-By default the unit sets `SB_DISABLE_SERVICE_WORKER=1`, so boot skips
-`navigator.serviceWorker.register()` and SilverBullet uses its plain IndexedDB
-store instead.
+By default the unit runs `silverbullet --single`, which means:
 
-That is deliberate: browsers refuse to register a worker whose script URL
-answers with a redirect (`The script resource is behind a redirect, which is
-disallowed`), and any authenticating reverse proxy in front of SilverBullet
-(Cloudflare Access, oauth2-proxy, …) answers `302` for
-`<prefix>/service_worker.js` unless the request already carries a session
-cookie. Behind a tunnel + Access you get exactly:
+* no `spaces.json` / `users.json`, no built-in login page and no `/.auth`
+  endpoint — the space is served to whoever can reach it;
+* the gatekeeper is whatever you put in front: Cloudflare Access, an oauth2
+  proxy, Authelia, a VPN, …;
+* **client-side encryption is unavailable** (it needs SilverBullet's own
+  username/password to derive the key). That is fine when an external proxy
+  does authentication.
+
+Because of that, a data folder left over from a multi-space setup
+(`spaces.json`) makes the service refuse to start; the installer stops early
+and tells you to either start from an empty folder or pass `--multi-space`.
+
+If you want SilverBullet's own accounts instead:
+
+```bash
+./install.sh --multi-space
+```
+
+and complete the wizard at `/.setup/` (or pass `--admin user:pass`).
+
+## Service worker / auth proxies
+
+The service worker is **enabled by default**. It gives the offline cache, PWA
+installation, tooling cache and client-side encryption, but browsers refuse to
+register a worker whose script URL answers with a redirect:
 
 ```
-Error: Failed to register a ServiceWorker for scope ('https://sb.example.com/notes/')
-with script ('https://sb.example.com/notes/service_worker.js'):
+Error: Failed to register a ServiceWorker for scope ('https://sb.example.com/')
+with script ('https://sb.example.com/service_worker.js'):
 The script resource is behind a redirect, which is disallowed.
 ```
 
-Trade-offs with the worker off: no offline/PWA support, no tooling cache, and
-**client-side encryption does not work** (it lives in the worker). Server-side
-login still works normally.
+Any authenticating proxy in front of SilverBullet answers `302` for those
+static files unless the request carries a session cookie. The fix is to let
+these two paths through unauthenticated (they only contain the public client
+bundle):
 
-Enable it with `--with-service-worker` when SilverBullet is directly exposed
-(no auth proxy in front) and you want offline support or client-side
-encryption:
+* `/<prefix>/service_worker.js` (and `service_worker.js.map`)
+* `/<prefix>/.client/*` (JS, CSS, fonts, icons, `manifest.json`)
+
+With Cloudflare Access that is a more specific application with a **Bypass**
+policy for those paths; everything else stays behind Google/SSO login.
+
+Only if your proxy cannot do path exceptions, turn the worker off — at the cost
+of offline support/PWA and client-side encryption:
 
 ```bash
-./install.sh --with-service-worker   # rewrites the unit and restarts
+./install.sh --no-service-worker
 ```
 
-Alternative, if you must keep an auth proxy *and* the worker: exempt only the
-worker script from authentication in the proxy (in Cloudflare Access, a more
-specific app for `host/service_worker.js` with a `bypass` policy), keeping in
-mind that all of the worker's own fetches still pass through that proxy.
+`--service-worker`/`--with-service-worker` switches it back on. Both are
+recorded in the unit file (`SB_DISABLE_SERVICE_WORKER`).
 
 ## After the first start
 
-Open <http://127.0.0.1:3234/> — on an empty data folder SilverBullet shows the
-setup wizard at `/.setup/`.
+Open <http://127.0.0.1:3234/>. In the default single-space mode there is no
+login prompt; in `--multi-space` mode an empty data folder shows the setup
+wizard at `/.setup/`.
 
 Because it's a *user* service, the script also enables lingering
 (`loginctl enable-linger $USER`) so the wiki keeps running after you log out and

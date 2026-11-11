@@ -27,11 +27,21 @@ PORT="${SB_PORT:-3234}"
 ADMIN="${SB_ADMIN:-}"          # optional user:pass -> runs `silverbullet setup` on a fresh data dir
 DO_START=1
 FORCE=0
-# The service worker is off by default: it cannot be registered behind
-# Cloudflare Access (the script URL answers 302) and behind any other
-# authenticating proxy. Enable it with --with-service-worker.
-WITH_SW="${SB_WITH_SERVICE_WORKER:-0}"
-case "$WITH_SW" in 1|true|yes) WITH_SW=1 ;; *) WITH_SW=0 ;; esac
+# Single-space mode by default: no users.json, no built-in login page. Meant to
+# run behind an authenticating proxy/tunnel (Cloudflare Access, oauth2-proxy,
+# Authelia, ...) that is the only gatekeeper. Use --multi-space to keep
+# SilverBullet's own accounts instead.
+SPACE_MODE="${SB_SPACE_MODE:-single}"
+case "$SPACE_MODE" in multi|accounts) SPACE_MODE=multi ;; *) SPACE_MODE=single ;; esac
+
+# Service worker (offline cache, PWA, client-side encryption). On by default;
+# behind an auth proxy it only works when the proxy lets /service_worker.js and
+# /.client/* through unauthenticated.
+WITH_SW="${SB_WITH_SERVICE_WORKER:-1}"
+case "$WITH_SW" in 0|false|no) WITH_SW=0 ;; *) WITH_SW=1 ;; esac
+
+# Optional URL prefix when the space is mounted below the domain root.
+URL_PREFIX="${SB_URL_PREFIX:-}"
 
 C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
 [ -t 1 ] || { C_RED=; C_GRN=; C_YEL=; C_DIM=; C_OFF=; }
@@ -55,18 +65,23 @@ Options:
   --port <port>      Listen port (default: 3234)
   --data <dir>       Data folder (default: ~/.silverbullet)
   --bin-dir <dir>    Install folder (default: ~/.local/bin)
-  --admin <u:p>      On a fresh data folder, provision it non-interactively with
-                     this admin login (see: silverbullet setup --help)
+  --single           Single-space mode, no built-in login (default). Use when
+                     an auth proxy / tunnel does the Google/SSO login.
+  --multi-space      Multi-space mode with SilverBullet's own accounts
+                     (spaces.json + users.json, set up via the /.setup wizard)
+  --admin <u:p>      Only with --multi-space: provision the admin account
+  --url-prefix <p>   Mount the space below the domain root, e.g. /notes
+                     (default: root)
+  --no-service-worker
+                     Disable the client service worker (offline/PWA/encryption).
+                     Only useful when an auth proxy cannot be told to let
+                     /service_worker.js and /.client/* through.
   --with-service-worker
-                     Enable the client service worker (offline cache, PWA
-                     install, client-side encryption). OFF by default: it
-                     cannot register behind Cloudflare Access or any other
-                     redirecting auth proxy ("The script resource is behind a
-                     redirect, which is disallowed").
+                     Enable the service worker (default)
   -h, --help         This help
 
 Environment: SB_VERSION, SB_PORT, SB_HOSTNAME, SB_DATA_DIR, SB_BIN_DIR, SB_ADMIN,
-             SB_WITH_SERVICE_WORKER=1 (same as --with-service-worker)
+             SB_SPACE_MODE=single|multi, SB_URL_PREFIX, SB_WITH_SERVICE_WORKER=0|1
 EOF
 }
 
@@ -80,6 +95,9 @@ while [ $# -gt 0 ]; do
     --data)      DATA_DIR="${2:?}"; shift 2 ;;
     --bin-dir)   BIN_DIR="${2:?}"; BIN="$BIN_DIR/silverbullet"; shift 2 ;;
     --admin)     ADMIN="${2:?}"; shift 2 ;;
+    --single)    SPACE_MODE=single; shift ;;
+    --multi-space|--multi) SPACE_MODE=multi; shift ;;
+    --url-prefix) URL_PREFIX="${2:?}"; shift 2 ;;
     --with-service-worker|--service-worker) WITH_SW=1; shift ;;
     --no-service-worker) WITH_SW=0; shift ;;
     -h|--help)   usage; exit 0 ;;
@@ -106,6 +124,13 @@ command -v curl >/dev/null 2>&1 || die "curl is required (install: sudo apt inst
 HAS_UNZIP=0; command -v unzip >/dev/null 2>&1 && HAS_UNZIP=1
 HAS_PY=0;    command -v python3 >/dev/null 2>&1 && HAS_PY=1
 [ "$HAS_UNZIP" = 1 ] || [ "$HAS_PY" = 1 ] || die "unzip or python3 is required to extract the release archive"
+
+if [ "$SPACE_MODE" = "single" ] && [ -f "$DATA_DIR/spaces.json" ]; then
+  die "single-space mode cannot run on a multi-space data folder:
+  found $DATA_DIR/spaces.json
+  Either start over (rm -rf \"$DATA_DIR\"/* -- back up your notes first) or
+  run this script with --multi-space."
+fi
 
 have_systemd_user() {
   command -v systemctl >/dev/null 2>&1 || return 1
@@ -171,12 +196,13 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=$(esc "$DATA_DIR")
-ExecStart=$(qd "$BIN") --hostname $(qd "$HOSTNAME_ARG") --port $(qd "$PORT") $(qd "$DATA_DIR")
+ExecStart=$(qd "$BIN") --hostname $(qd "$HOSTNAME_ARG") --port $(qd "$PORT")$(if [ "$SPACE_MODE" = "single" ]; then printf ' --single'; fi) $(qd "$DATA_DIR")
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=20
 SyslogIdentifier=silverbullet
 $(if [ "$WITH_SW" = 0 ]; then printf 'Environment=SB_DISABLE_SERVICE_WORKER=1\n'; fi)
+$(if [ -n "$URL_PREFIX" ]; then printf 'Environment=SB_URL_PREFIX=%s\n' "$URL_PREFIX"; fi)
 # Moderate hardening: SilverBullet only ever needs its data folder.
 # NOTE: do NOT add ProtectKernelModules=/ProtectKernelLogs=/ProtectClock= here.
 # They clear bits from the capability bounding set, and the *user* manager
@@ -248,7 +274,9 @@ else
 fi
 
 # Initialize a brand-new data folder when asked to.
-if [ -n "$ADMIN" ] && [ ! -f "$DATA_DIR/.silverbullet-setup-done" ] && [ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
+if [ -n "$ADMIN" ] && [ "$SPACE_MODE" = "single" ]; then
+  warn "--admin only applies to --multi-space; ignoring it in single-space mode"
+elif [ -n "$ADMIN" ] && [ ! -f "$DATA_DIR/.silverbullet-setup-done" ] && [ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
   info "provisioning fresh data folder with admin '$ADMIN'"
   "$BIN" setup --admin "$ADMIN" "$DATA_DIR" || warn "setup failed; open /.setup in the browser instead"
   : > "$DATA_DIR/.silverbullet-setup-done" 2>/dev/null || true
@@ -309,8 +337,9 @@ fi
 cat <<EOF
 
 ${C_DIM}--------------------------------------------------------------${C_OFF}
- URL       : http://$HOSTNAME_ARG:$PORT/   (fresh data dir: open /.setup)
- sw        : $(if [ "$WITH_SW" = 1 ]; then echo "enabled"; else echo "disabled (needs --with-service-worker)"; fi)
+ URL       : http://$HOSTNAME_ARG:$PORT$URL_PREFIX/   ($(if [ "$SPACE_MODE" = "single" ]; then echo "no built-in login; put your auth proxy in front"; else echo "fresh data dir: open /.setup"; fi))
+ auth      : $(if [ "$SPACE_MODE" = "single" ]; then echo "single-space, no built-in login (expects a proxy/tunnel in front)"; else echo "multi-space, SilverBullet accounts (spaces.json)"; fi)
+ sw        : $(if [ "$WITH_SW" = 1 ]; then echo "enabled"; else echo "disabled (--no-service-worker)"; fi)
  binary    : $BIN
  data      : $DATA_DIR
  unit      : $UNIT   (edit, then: systemctl --user daemon-reload)
